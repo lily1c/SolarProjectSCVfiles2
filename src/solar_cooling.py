@@ -1,3 +1,8 @@
+"""
+Solar Panel Cooling Optimization Module
+Contains all core logic for cooling decision analysis
+"""
+
 import requests
 import pandas as pd
 import joblib
@@ -7,8 +12,6 @@ import joblib
 # -----------------------------
 BASE_URL = "https://power.larc.nasa.gov/api/temporal/hourly/point"
 GEOCODE_URL = "https://nominatim.openstreetmap.org/search"
-
-MODEL_PATH = "models/cooling_decision_model.pkl"
 
 # -----------------------------
 # PANEL & PUMP CONSTANTS
@@ -24,9 +27,6 @@ pump_efficiency = 0.85
 pump_power_Wh = pump_power_rated / pump_efficiency
 min_runtime = 6             # minutes
 
-# -----------------------------
-# FUNCTIONS
-# -----------------------------
 
 def get_coordinates(place):
     """Find latitude and longitude for any city/town using OpenStreetMap."""
@@ -57,14 +57,14 @@ def fetch_weather_data(lat, lon, year, month, day, hour):
     data = response.json()
 
     if "properties" not in data or "parameter" not in data["properties"]:
-        raise ValueError("❌ Failed to fetch data from NASA POWER API.")
+        raise ValueError("Failed to fetch data from NASA POWER API.")
 
     df = pd.DataFrame(data["properties"]["parameter"])
     df = df.rename(columns={"T2M": "Temperature", "ALLSKY_SFC_SW_DWN": "Irradiance"})
     df["Hour"] = range(len(df))
 
     if hour not in df["Hour"].values:
-        raise ValueError("❌ Hour out of range for data (0–23).")
+        raise ValueError("Hour out of range for data (0–23).")
 
     row = df[df["Hour"] == hour]
     return row[["Temperature", "Irradiance"]].iloc[0].to_dict()
@@ -84,16 +84,15 @@ def physics_based_check(T_amb, G):
     cooling_cost = pump_power_Wh
 
     should_cool = energy_gain > cooling_cost
-    return panel_temp, energy_gain, cooling_cost, should_cool
+    return panel_temp, energy_gain, cooling_cost, should_cool, P_unc, P_cool
 
 
-def predict_from_model(T_amb, G, hour):
+def predict_from_model(T_amb, G, hour, model_path="models/cooling_decision_model.pkl"):
     """Load trained model and predict output, aligned with training features."""
     try:
-        model = joblib.load(MODEL_PATH)
+        model = joblib.load(model_path)
     except FileNotFoundError:
-        print("⚠️ Model file not found. Skipping prediction.")
-        return None
+        return None, "Model file not found"
 
     panel_temp = T_amb + ((NOCT - 20) / 800) * G
 
@@ -107,55 +106,4 @@ def predict_from_model(T_amb, G, hour):
     feature_order = model.feature_names_in_
     features_aligned = pd.DataFrame([[features_dict[f] for f in feature_order]], columns=feature_order)
 
-    return model.predict(features_aligned)[0]
-
-
-# -----------------------------
-# MAIN INTERFACE
-# -----------------------------
-def main():
-    print("🌞 Solar Cooling Real-World Checker 🌡️")
-
-    # --- Sample city and date/time ---
-    place = "New York, USA"
-    year, month, day, hour = 2023, 7, 15, 14  # Example: July 15, 2023 at 14:00
-    coords = get_coordinates(place)
-    if coords:
-        lat, lon, name = coords
-        print(f"✅ Using sample city: {name} (Lat: {lat:.3f}, Lon: {lon:.3f})")
-    else:
-        print("❌ Could not fetch coordinates for sample city.")
-        return
-
-    # --- Fetch weather data ---
-    print(f"\n🌍 Fetching real weather data for {name} on {year}-{month:02d}-{day:02d} at {hour}:00...")
-    try:
-        real_data = fetch_weather_data(lat, lon, year, month, day, hour)
-        T_amb = real_data["Temperature"]
-        G = real_data["Irradiance"]
-        print(f"✅ Real Weather Data: {real_data}")
-    except Exception as e:
-        print(str(e))
-        return
-
-    # --- Physics-based calculation ---
-    panel_temp, energy_gain, cooling_cost, should_cool = physics_based_check(T_amb, G)
-    print(f"\n⚙️ Physics-based calculation:")
-    print(f"Panel Temperature: {panel_temp:.2f} °C")
-    print(f"Energy Gain from Cooling: {energy_gain:.2f} W")
-    print(f"Cooling Cost (pump): {cooling_cost:.2f} W")
-    print(f"Cooling Beneficial: {'Yes' if should_cool else 'No'}")
-
-    # --- ML model check ---
-    prediction = predict_from_model(T_amb, G, hour)
-    if prediction is not None:
-        print(f"\n🔮 ML Model Prediction: {'Yes' if prediction else 'No'}")
-        print(f"✅ Model agrees with physics: {prediction == should_cool}")
-    else:
-        print("\n⚠️ Could not compare since model file not found.")
-
-    print("\n✨ All tasks completed successfully!")
-
-
-if __name__ == "__main__":
-    main()
+    return model.predict(features_aligned)[0], None
